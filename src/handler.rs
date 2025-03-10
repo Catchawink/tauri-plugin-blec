@@ -1,10 +1,10 @@
 use crate::error::Error;
-use crate::models::{self, fmt_addr, BleDevice, ScanFilter, Service};
+use btleplug::models::{self, fmt_addr, BleDevice, ScanFilter, Service};
 use btleplug::api::CentralEvent;
 use btleplug::api::{Central, Characteristic, Manager as _, Peripheral as _};
 use btleplug::platform::PeripheralId;
 use futures::{Stream, StreamExt};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,7 +26,7 @@ struct Listener {
 }
 
 struct HandlerState {
-    characs: Vec<Characteristic>,
+    //characs: HashMap<String, HashSet<Characteristic>>,
     listen_handle: Option<async_runtime::JoinHandle<()>>,
     on_disconnect: Option<Mutex<Box<dyn Fn() + Send>>>,
     connection_update_channel: Vec<mpsc::Sender<bool>>,
@@ -34,12 +34,22 @@ struct HandlerState {
     scan_task: Option<tokio::task::JoinHandle<()>>,
 }
 
+/*
 impl HandlerState {
-    fn get_charac(&self, uuid: Uuid) -> Result<&Characteristic, Error> {
-        let charac = self.characs.iter().find(|c| c.uuid == uuid);
-        charac.ok_or(Error::CharacNotAvailable(uuid.to_string()))
+    fn set_charac(&self, device_id: String, uuid: Uuid, charac: Characteristic) {
+        let mut characs = self.characs.entry(&device_id).or_insert(HashSet::default());
+        characs.insert(charac);
     }
-}
+
+    fn get_charac(&self, device_id: String, uuid: Uuid) -> Result<&Characteristic, Error> {
+        if let Some(characs) = self.characs.get(&device_id) {
+            let charac = characs.iter().find(|c| c.uuid == uuid);
+            charac.ok_or(Error::CharacNotAvailable(uuid.to_string()))
+        } else {
+            Err(Error::CharacNotAvailable(uuid.to_string()))
+        }
+    }
+} */
 
 pub struct Handler {
     devices: Arc<Mutex<HashMap<String, Peripheral>>>,
@@ -75,7 +85,7 @@ impl Handler {
                 scan_task: None,
                 scan_update_channel: vec![],
                 listen_handle: None,
-                characs: vec![],
+                //characs: HashMap::default(),
             }),
         })
     }
@@ -149,7 +159,7 @@ impl Handler {
         &'static self,
         address: &str,
         on_disconnect: Option<Box<dyn Fn() + Send>>,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<btleplug::models::Service>, Error> {
         if self.devices.lock().await.len() == 0 {
             self.discover(None, 1000, ScanFilter::None).await?;
         }
@@ -183,29 +193,26 @@ impl Handler {
             state.on_disconnect = Some(Mutex::new(cb));
         }
         // discover service/characteristics
-        self.connect_services(&mut state).await?;
+        let services = self.connect_services(&mut state).await?;
+        
         // start background task for notifications
         state.listen_handle = Some(async_runtime::spawn(listen_notify(
             self.connected_dev.lock().await.clone(),
             self.notify_listeners.clone(),
         )));
-        Ok(())
+        
+        Ok(services)
     }
 
-    async fn connect_services(&self, state: &mut HandlerState) -> Result<(), Error> {
+    async fn connect_services(&self, state: &mut HandlerState) -> Result<Vec<btleplug::models::Service>, Error> {
         let device = self.connected_dev.lock().await;
         let device = device.as_ref().ok_or(Error::NoDeviceConnected)?;
-        let mut services = device.services();
+        let services = device.services();
         if services.is_empty() {
             device.discover_services().await?;
-            services = device.services();
+            //services = device.services();
         }
-        for s in services {
-            for c in &s.characteristics {
-                state.characs.push(c.clone());
-            }
-        }
-        Ok(())
+        Ok(device.services().into_iter().map(|x|x.into()).collect())
     }
 
     async fn connect_device(&self, address: &str) -> Result<(), Error> {
@@ -313,7 +320,7 @@ impl Handler {
                 let callback = on_disconnect.lock().await;
                 callback();
             }
-            state.characs.clear();
+            //state.characs.clear();
         }
         self.send_connection_update(false).await;
         self.connected_tx
@@ -440,7 +447,7 @@ impl Handler {
         if device.services().is_empty() {
             device.discover_services().await?;
         }
-        let services = device.services().iter().map(Service::from).collect();
+        let services = device.services().iter().cloned().map(Service::from).collect();
         if !already_connected {
             let mut connected_rx = self.connected_rx.clone();
             if *connected_rx.borrow_and_update() {
@@ -512,10 +519,12 @@ impl Handler {
     ) -> Result<(), Error> {
         let dev = self.connected_dev.lock().await;
         let dev = dev.as_ref().ok_or(Error::NoDeviceConnected)?;
-        let state = self.state.lock().await;
-        let charac = state.get_charac(c)?;
-        dev.write(charac, data, write_type.into()).await?;
-        Ok(())
+        if let Some(charac) = dev.characteristics().iter().find(|x| x.uuid == c) {
+            dev.write(charac, data, write_type.into()).await?;
+            Ok(())
+        } else {
+            Err(Error::CharacNotAvailable(c.into()))
+        }
     }
 
     /// Receives data from the given characteristic of the connected device
@@ -536,10 +545,13 @@ impl Handler {
     pub async fn recv_data(&self, c: Uuid) -> Result<Vec<u8>, Error> {
         let dev = self.connected_dev.lock().await;
         let dev = dev.as_ref().ok_or(Error::NoDeviceConnected)?;
-        let state = self.state.lock().await;
-        let charac = state.get_charac(c)?;
-        let data = dev.read(charac).await?;
-        Ok(data)
+        
+        if let Some(charac) = dev.characteristics().iter().find(|x| x.uuid == c) {
+            let data = dev.read(charac).await?;
+            Ok(data)
+        } else {
+            Err(Error::CharacNotAvailable(c.into()))
+        }
     }
 
     /// Subscribe to notifications from the given characteristic
@@ -564,14 +576,16 @@ impl Handler {
     ) -> Result<(), Error> {
         let dev = self.connected_dev.lock().await;
         let dev = dev.as_ref().ok_or(Error::NoDeviceConnected)?;
-        let state = self.state.lock().await;
-        let charac = state.get_charac(c)?;
-        dev.subscribe(charac).await?;
-        self.notify_listeners.lock().await.push(Listener {
-            uuid: charac.uuid,
-            callback: Arc::new(callback),
-        });
-        Ok(())
+        if let Some(charac) = dev.characteristics().iter().find(|x| x.uuid == c) {
+            dev.subscribe(charac).await?;
+            self.notify_listeners.lock().await.push(Listener {
+                uuid: charac.uuid,
+                callback: Arc::new(callback),
+            });
+            Ok(())
+        } else {
+            Err(Error::CharacNotAvailable(c.into()))
+        }
     }
 
     /// Unsubscribe from notifications for the given characteristic
@@ -582,12 +596,14 @@ impl Handler {
     pub async fn unsubscribe(&self, c: Uuid) -> Result<(), Error> {
         let dev = self.connected_dev.lock().await;
         let dev = dev.as_ref().ok_or(Error::NoDeviceConnected)?;
-        let state = self.state.lock().await;
-        let charac = state.get_charac(c)?;
-        dev.unsubscribe(charac).await?;
-        let mut listeners = self.notify_listeners.lock().await;
-        listeners.retain(|l| l.uuid != charac.uuid);
-        Ok(())
+        if let Some(charac) = dev.characteristics().iter().find(|x| x.uuid == c) {
+            dev.unsubscribe(charac).await?;
+            let mut listeners = self.notify_listeners.lock().await;
+            listeners.retain(|l| l.uuid != charac.uuid);
+            Ok(())
+        } else {
+            Err(Error::CharacNotAvailable(c.into()))
+        }
     }
 
     pub(super) async fn get_event_stream(

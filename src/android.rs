@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use btleplug::{
     api::{
-        BDAddr, CentralEvent, CentralState, CharPropFlags, Characteristic, Descriptor,
+        BDAddr, CentralEvent, CharPropFlags, Characteristic, Descriptor,
         PeripheralProperties, Service, ValueNotification, WriteType,
     },
     platform::PeripheralId,
@@ -140,9 +140,9 @@ impl btleplug::api::Central for Adapter {
         todo!()
     }
 
-    async fn adapter_state(&self) -> Result<CentralState> {
-        todo!()
-    }
+    //async fn adapter_state(&self) -> Result<CentralState> {
+    //    todo!()
+    //}
 }
 
 pub struct Manager;

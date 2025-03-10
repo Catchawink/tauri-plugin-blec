@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
+use btleplug::api::Characteristic;
 use tauri::ipc::Channel;
 use tauri::{async_runtime, command, AppHandle, Runtime};
 use tokio::sync::mpsc;
@@ -6,17 +9,19 @@ use uuid::Uuid;
 
 use crate::error::Result;
 use crate::get_handler;
-use crate::models::{BleDevice, ScanFilter, WriteType};
+use btleplug::models::{BleDevice, ScanFilter, Service, WriteType};
 
 #[command]
 pub(crate) async fn scan<R: Runtime>(
     _app: AppHandle<R>,
     timeout: u64,
+    services: Vec<Uuid>,
     on_devices: Channel<Vec<BleDevice>>,
 ) -> Result<()> {
     tracing::info!("Scanning for BLE devices");
     let handler = get_handler()?;
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    
     async_runtime::spawn(async move {
         while let Some(devices) = rx.recv().await {
             on_devices
@@ -25,7 +30,7 @@ pub(crate) async fn scan<R: Runtime>(
         }
     });
     handler
-        .discover(Some(tx), timeout, ScanFilter::None)
+        .discover(Some(tx), timeout, ScanFilter::AnyService(services))
         .await?;
     Ok(())
 }
@@ -43,7 +48,7 @@ pub(crate) async fn connect<R: Runtime>(
     _app: AppHandle<R>,
     address: String,
     on_disconnect: Channel<()>,
-) -> Result<()> {
+) -> Result<Vec<Service>> {
     tracing::info!("Connecting to BLE device: {:?}", address);
     let handler = get_handler()?;
     let disconnct_handler = move || {
@@ -51,10 +56,10 @@ pub(crate) async fn connect<R: Runtime>(
             .send(())
             .expect("failed to send disconnect event to the front-end");
     };
-    handler
+    let services = handler
         .connect(&address, Some(Box::new(disconnct_handler)))
         .await?;
-    Ok(())
+    Ok(services)
 }
 
 #[command]
