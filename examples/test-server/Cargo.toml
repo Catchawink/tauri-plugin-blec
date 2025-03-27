@@ -11,4 +11,4 @@ bluer = {version="0.17.3", features=["bluetoothd"]}
 env_logger = "0.11.5"
 futures = "0.3.31"
 tokio = { version = "1.41.0", features = ["rt-multi-thread", "macros", "io-std"] }
-uuid = "1.11.0"
+uuid = { version = "1.13.1" }
