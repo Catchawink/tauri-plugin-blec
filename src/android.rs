@@ -239,6 +239,7 @@ impl btleplug::api::Peripheral for Peripheral {
         struct ServicesResult {
             result: Vec<ResService>,
         }
+
         let res: ServicesResult = get_handle()
             .run_mobile_plugin(
                 "services",
@@ -248,11 +249,31 @@ impl btleplug::api::Peripheral for Peripheral {
             )
             .map_err(|e| btleplug::Error::RuntimeError(e.to_string()))
             .expect("failed to get services");
+
         let mut services = BTreeSet::new();
+
         for s in res.result {
             let mut characteristics = BTreeSet::new();
+
             for c in s.characs {
+                eprintln!(
+                    "ANDROID->RUST characteristic {} service {} raw properties={:#04x}",
+                    c.uuid,
+                    s.uuid,
+                    c.properties,
+                );
+
+                let properties = CharPropFlags::from_bits_truncate(c.properties);
+
+                eprintln!(
+                    "ANDROID->RUST characteristic {} converted properties={:?} bits={:#04x}",
+                    c.uuid,
+                    properties,
+                    properties.bits(),
+                );
+
                 let mut descriptors = BTreeSet::new();
+
                 for d in c.descriptors {
                     descriptors.insert(Descriptor {
                         uuid: d,
@@ -260,19 +281,22 @@ impl btleplug::api::Peripheral for Peripheral {
                         service_uuid: s.uuid,
                     });
                 }
+
                 characteristics.insert(Characteristic {
                     uuid: c.uuid,
                     service_uuid: s.uuid,
-                    properties: CharPropFlags::from_bits_truncate(c.properties),
+                    properties,
                     descriptors,
                 });
             }
+
             services.insert(Service {
                 uuid: s.uuid,
                 primary: s.primary,
                 characteristics,
             });
         }
+
         services
     }
 

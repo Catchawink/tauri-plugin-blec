@@ -116,68 +116,114 @@ pub(crate) async fn scanning_state<R: Runtime>(
 pub(crate) async fn send<R: Runtime>(
     _app: AppHandle<R>,
     characteristic: Uuid,
+    service: Option<Uuid>,
     data: Vec<u8>,
     write_type: WriteType,
 ) -> Result<()> {
-    info!("Sending data: {data:?}");
     let handler = get_handler()?;
-    handler.send_data(characteristic, &data, write_type).await?;
+
+    handler
+        .send_data(
+            characteristic,
+            service,
+            &data,
+            write_type,
+        )
+        .await?;
+
     Ok(())
 }
 
 #[command]
-pub(crate) async fn recv<R: Runtime>(_app: AppHandle<R>, characteristic: Uuid) -> Result<Vec<u8>> {
+pub(crate) async fn recv<R: Runtime>(
+    _app: AppHandle<R>,
+    characteristic: Uuid,
+    service: Option<Uuid>,
+) -> Result<Vec<u8>> {
     let handler = get_handler()?;
-    let data = handler.recv_data(characteristic).await?;
-    Ok(data)
+
+    handler
+        .recv_data(characteristic, service)
+        .await
 }
 
 #[command]
 pub(crate) async fn send_string<R: Runtime>(
     app: AppHandle<R>,
     characteristic: Uuid,
+    service: Option<Uuid>,
     data: String,
     write_type: WriteType,
 ) -> Result<()> {
-    let data = data.as_bytes().to_vec();
-    send(app, characteristic, data, write_type).await
+    send(
+        app,
+        characteristic,
+        service,
+        data.into_bytes(),
+        write_type,
+    )
+    .await
 }
 
 #[command]
 pub(crate) async fn recv_string<R: Runtime>(
     app: AppHandle<R>,
     characteristic: Uuid,
+    service: Option<Uuid>,
 ) -> Result<String> {
-    let data = recv(app, characteristic).await?;
-    Ok(String::from_utf8(data).expect("failed to convert data to string"))
+    let data = recv(app, characteristic, service).await?;
+    Ok(String::from_utf8_lossy(&data).into_owned())
 }
 
-async fn subscribe_channel(characteristic: Uuid) -> Result<mpsc::Receiver<Vec<u8>>> {
+async fn subscribe_channel(
+    characteristic: Uuid,
+    service: Option<Uuid>,
+) -> Result<mpsc::Receiver<Vec<u8>>> {
     let handler = get_handler()?;
-    let (tx, rx) = tokio::sync::mpsc::channel(1);
+
+    // BLE notifications can arrive quickly. A capacity of 1 plus try_send()
+    // makes transient bursts very likely to panic.
+    let (tx, rx) = tokio::sync::mpsc::channel(512);
+
     handler
-        .subscribe(characteristic, move |data| {
-            info!("subscribe_channel: {:?}", data);
-            tx.try_send(data.to_vec())
-                .expect("failed to send data to the channel");
-        })
+        .subscribe(
+            characteristic,
+            service,
+            move |data| {
+                info!("subscribe_channel: {:?}", data);
+
+                if let Err(error) = tx.try_send(data.to_vec()) {
+                    tracing::warn!(
+                        "Failed to queue BLE notification: {error}"
+                    );
+                }
+            },
+        )
         .await?;
+
     Ok(rx)
 }
+
 #[command]
 pub(crate) async fn subscribe<R: Runtime>(
     _app: AppHandle<R>,
     characteristic: Uuid,
+    service: Option<Uuid>,
     on_data: Channel<Vec<u8>>,
 ) -> Result<()> {
-    let mut rx = subscribe_channel(characteristic).await?;
+    let mut rx = subscribe_channel(characteristic, service).await?;
+
     async_runtime::spawn(async move {
         while let Some(data) = rx.recv().await {
-            on_data
-                .send(data)
-                .expect("failed to send data to the front-end");
+            if let Err(error) = on_data.send(data) {
+                tracing::warn!(
+                    "Failed to send BLE notification to front-end: {error}"
+                );
+                break;
+            }
         }
     });
+
     Ok(())
 }
 
@@ -185,18 +231,32 @@ pub(crate) async fn subscribe<R: Runtime>(
 pub(crate) async fn subscribe_string<R: Runtime>(
     _app: AppHandle<R>,
     characteristic: Uuid,
+    service: Option<Uuid>,
     on_data: Channel<String>,
 ) -> Result<()> {
-    let mut rx = subscribe_channel(characteristic).await?;
+    let mut rx = subscribe_channel(characteristic, service).await?;
+
     async_runtime::spawn(async move {
         while let Some(data) = rx.recv().await {
-            info!("subscribe_string: {:?}", data);
-            let data = String::from_utf8(data).expect("failed to convert data to string");
-            on_data
-                .send(data)
-                .expect("failed to send data to the front-end");
+            match String::from_utf8(data) {
+                Ok(data) => {
+                    if let Err(error) = on_data.send(data) {
+                        tracing::warn!(
+                            "Failed to send BLE notification to front-end: {error}"
+                        );
+                        break;
+                    }
+                }
+
+                Err(error) => {
+                    tracing::warn!(
+                        "Received invalid UTF-8 BLE notification: {error}"
+                    );
+                }
+            }
         }
     });
+
     Ok(())
 }
 
@@ -204,10 +264,13 @@ pub(crate) async fn subscribe_string<R: Runtime>(
 pub(crate) async fn unsubscribe<R: Runtime>(
     _app: AppHandle<R>,
     characteristic: Uuid,
+    service: Option<Uuid>,
 ) -> Result<()> {
     let handler = get_handler()?;
-    handler.unsubscribe(characteristic).await?;
-    Ok(())
+
+    handler
+        .unsubscribe(characteristic, service)
+        .await
 }
 
 pub fn commands<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool {

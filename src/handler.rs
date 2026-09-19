@@ -204,15 +204,53 @@ impl Handler {
         Ok(services)
     }
 
-    async fn connect_services(&self, state: &mut HandlerState) -> Result<Vec<btleplug::models::Service>, Error> {
+    async fn connect_services(
+        &self,
+        _state: &mut HandlerState,
+    ) -> Result<Vec<btleplug::models::Service>, Error> {
         let device = self.connected_dev.lock().await;
         let device = device.as_ref().ok_or(Error::NoDeviceConnected)?;
-        let services = device.services();
-        if services.is_empty() {
+
+        if device.services().is_empty() {
             device.discover_services().await?;
-            //services = device.services();
         }
-        Ok(device.services().into_iter().map(|x|x.into()).collect())
+
+        let services = device.services();
+
+        // Stage 1:
+        // What does native btleplug think the properties are?
+        for service in &services {
+            for characteristic in &service.characteristics {
+                eprintln!(
+                    "NATIVE API characteristic {} service {} properties {:?} bits={:#04x}",
+                    characteristic.uuid,
+                    characteristic.service_uuid,
+                    characteristic.properties,
+                    characteristic.properties.bits(),
+                );
+            }
+        }
+
+        let model_services: Vec<btleplug::models::Service> = services
+            .into_iter()
+            .map(Into::into)
+            .collect();
+
+        // Stage 2:
+        // Did conversion into our serializable model preserve them?
+        for service in &model_services {
+            for characteristic in &service.characteristics {
+                eprintln!(
+                    "NATIVE MODEL characteristic {} service {} properties {:?} bits={:#04x}",
+                    characteristic.uuid,
+                    characteristic.service_uuid,
+                    characteristic.properties,
+                    characteristic.properties.bits(),
+                );
+            }
+        }
+
+        Ok(model_services)
     }
 
     async fn connect_device(&self, address: &str) -> Result<(), Error> {
@@ -447,6 +485,18 @@ impl Handler {
         if device.services().is_empty() {
             device.discover_services().await?;
         }
+        for service in device.services() {
+            for characteristic in &service.characteristics {
+                eprintln!(
+                    "NATIVE characteristic {} service {} properties {:?} bits={:#04x}",
+                    characteristic.uuid,
+                    characteristic.service_uuid,
+                    characteristic.properties,
+                    characteristic.properties.bits(),
+                );
+            }
+        }
+
         let services = device.services().iter().cloned().map(Service::from).collect();
         if !already_connected {
             let mut connected_rx = self.connected_rx.clone();
@@ -513,18 +563,20 @@ impl Handler {
     /// ```
     pub async fn send_data(
         &self,
-        c: Uuid,
+        characteristic: Uuid,
+        service: Option<Uuid>,
         data: &[u8],
         write_type: models::WriteType,
     ) -> Result<(), Error> {
         let dev = self.connected_dev.lock().await;
         let dev = dev.as_ref().ok_or(Error::NoDeviceConnected)?;
-        if let Some(charac) = dev.characteristics().iter().find(|x| x.uuid == c) {
-            dev.write(charac, data, write_type.into()).await?;
-            Ok(())
-        } else {
-            Err(Error::CharacNotAvailable(c.into()))
-        }
+
+        let charac =
+            find_characteristic(dev, characteristic, service)?;
+
+        dev.write(&charac, data, write_type.into()).await?;
+
+        Ok(())
     }
 
     /// Receives data from the given characteristic of the connected device
@@ -542,18 +594,25 @@ impl Handler {
     ///     let response = handler.recv_data(CHARACTERISTIC_UUID).await.unwrap();
     /// });
     /// ```
-    pub async fn recv_data(&self, c: Uuid) -> Result<Vec<u8>, Error> {
+    pub async fn recv_data(
+        &self,
+        characteristic: Uuid,
+        service: Option<Uuid>,
+    ) -> Result<Vec<u8>, Error> {
         let dev = self.connected_dev.lock().await;
         let dev = dev.as_ref().ok_or(Error::NoDeviceConnected)?;
-        
-        if let Some(charac) = dev.characteristics().iter().find(|x| x.uuid == c) {
-            let data = dev.read(charac).await?;
-            Ok(data)
-        } else {
-            Err(Error::CharacNotAvailable(c.into()))
-        }
-    }
 
+        let charac = find_characteristic(
+            dev,
+            characteristic,
+            service,
+        )?;
+
+        let data = dev.read(&charac).await?;
+
+        Ok(data)
+    }
+    
     /// Subscribe to notifications from the given characteristic
     /// The callback will be called whenever a notification is received
     /// # Errors
@@ -571,21 +630,24 @@ impl Handler {
     /// ```
     pub async fn subscribe(
         &self,
-        c: Uuid,
+        characteristic: Uuid,
+        service: Option<Uuid>,
         callback: impl Fn(&[u8]) + Send + Sync + 'static,
     ) -> Result<(), Error> {
         let dev = self.connected_dev.lock().await;
         let dev = dev.as_ref().ok_or(Error::NoDeviceConnected)?;
-        if let Some(charac) = dev.characteristics().iter().find(|x| x.uuid == c) {
-            dev.subscribe(charac).await?;
-            self.notify_listeners.lock().await.push(Listener {
-                uuid: charac.uuid,
-                callback: Arc::new(callback),
-            });
-            Ok(())
-        } else {
-            Err(Error::CharacNotAvailable(c.into()))
-        }
+
+        let charac =
+            find_characteristic(dev, characteristic, service)?;
+
+        dev.subscribe(&charac).await?;
+
+        self.notify_listeners.lock().await.push(Listener {
+            uuid: charac.uuid,
+            callback: Arc::new(callback),
+        });
+
+        Ok(())
     }
 
     /// Unsubscribe from notifications for the given characteristic
@@ -593,17 +655,25 @@ impl Handler {
     /// # Errors
     /// Returns an error if no device is connected or the characteristic is not available
     /// or if the unsubscribe operation fails
-    pub async fn unsubscribe(&self, c: Uuid) -> Result<(), Error> {
+    pub async fn unsubscribe(
+        &self,
+        characteristic: Uuid,
+        service: Option<Uuid>,
+    ) -> Result<(), Error> {
         let dev = self.connected_dev.lock().await;
         let dev = dev.as_ref().ok_or(Error::NoDeviceConnected)?;
-        if let Some(charac) = dev.characteristics().iter().find(|x| x.uuid == c) {
-            dev.unsubscribe(charac).await?;
-            let mut listeners = self.notify_listeners.lock().await;
-            listeners.retain(|l| l.uuid != charac.uuid);
-            Ok(())
-        } else {
-            Err(Error::CharacNotAvailable(c.into()))
-        }
+
+        let charac =
+            find_characteristic(dev, characteristic, service)?;
+
+        dev.unsubscribe(&charac).await?;
+
+        self.notify_listeners
+            .lock()
+            .await
+            .retain(|listener| listener.uuid != charac.uuid);
+
+        Ok(())
     }
 
     pub(super) async fn get_event_stream(
@@ -741,4 +811,23 @@ async fn listen_notify(dev: Option<Peripheral>, listeners: Arc<Mutex<Vec<Listene
             }
         }
     }
+}
+
+fn find_characteristic(
+    device: &Peripheral,
+    characteristic: Uuid,
+    service: Option<Uuid>,
+) -> Result<Characteristic, Error> {
+    device
+        .characteristics()
+        .into_iter()
+        .find(|candidate| {
+            candidate.uuid == characteristic
+                && service
+                    .map(|service| candidate.service_uuid == service)
+                    .unwrap_or(true)
+        })
+        .ok_or_else(|| {
+            Error::CharacNotAvailable(characteristic.to_string())
+        })
 }
