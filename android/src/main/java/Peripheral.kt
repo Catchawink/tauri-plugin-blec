@@ -38,9 +38,10 @@ class Peripheral(
         private val CLIENT_CHARACTERISTIC_CONFIGURATION_DESCRIPTOR: UUID =
             UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
-        // Ask Android for the maximum ATT MTU. The peripheral will negotiate
-        // this down to the largest value it actually supports.
-        private const val REQUESTED_MTU = 517
+        // Android 14 normalizes the first ATT-MTU request to 517 bytes. This
+        // is only a platform negotiation hint; onMtuChanged remains the
+        // connection's authoritative value.
+        private const val ANDROID_ATT_MTU_REQUEST = 517
 
         // Don't allow a missing onMtuChanged callback to stall connection
         // forever. If MTU negotiation doesn't finish, continue with whatever
@@ -196,7 +197,7 @@ class Peripheral(
 
                 Log.i(
                     "BLEC",
-                    "GATT connected; requesting ATT MTU $REQUESTED_MTU"
+                    "GATT connected; requesting Android ATT MTU hint $ANDROID_ATT_MTU_REQUEST"
                 )
 
                 mainHandler.removeCallbacks(mtuTimeoutRunnable)
@@ -204,7 +205,7 @@ class Peripheral(
                 val started = if (
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP
                 ) {
-                    gatt.requestMtu(REQUESTED_MTU)
+                    gatt.requestMtu(ANDROID_ATT_MTU_REQUEST)
                 } else {
                     false
                 }
