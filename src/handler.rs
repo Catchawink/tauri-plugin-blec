@@ -1,7 +1,7 @@
 use crate::error::Error;
-use btleplug::models::{self, fmt_addr, BleDevice, ScanFilter, Service};
 use btleplug::api::CentralEvent;
 use btleplug::api::{Central, Characteristic, Manager as _, Peripheral as _};
+use btleplug::models::{self, BleDevice, ScanFilter, Service, fmt_addr};
 use btleplug::platform::PeripheralId;
 use futures::{Stream, StreamExt};
 use std::collections::{HashMap, HashSet};
@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::async_runtime;
-use tokio::sync::{mpsc, watch, Mutex};
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -194,13 +194,13 @@ impl Handler {
         }
         // discover service/characteristics
         let services = self.connect_services(&mut state).await?;
-        
+
         // start background task for notifications
         state.listen_handle = Some(async_runtime::spawn(listen_notify(
             self.connected_dev.lock().await.clone(),
             self.notify_listeners.clone(),
         )));
-        
+
         Ok(services)
     }
 
@@ -231,10 +231,8 @@ impl Handler {
             }
         }
 
-        let model_services: Vec<btleplug::models::Service> = services
-            .into_iter()
-            .map(Into::into)
-            .collect();
+        let model_services: Vec<btleplug::models::Service> =
+            services.into_iter().map(Into::into).collect();
 
         // Stage 2:
         // Did conversion into our serializable model preserve them?
@@ -342,7 +340,9 @@ impl Handler {
             .map(btleplug::api::Peripheral::id);
         if !connected.as_ref().is_some_and(|c| *c == peripheral_id) {
             // event not for currently connected device, ignore
-            warn!("Unexpected disconnect event for device {peripheral_id}, connected device is {connected:?}",);
+            warn!(
+                "Unexpected disconnect event for device {peripheral_id}, connected device is {connected:?}",
+            );
             return Ok(());
         }
         {
@@ -497,7 +497,12 @@ impl Handler {
             }
         }
 
-        let services = device.services().iter().cloned().map(Service::from).collect();
+        let services = device
+            .services()
+            .iter()
+            .cloned()
+            .map(Service::from)
+            .collect();
         if !already_connected {
             let mut connected_rx = self.connected_rx.clone();
             if *connected_rx.borrow_and_update() {
@@ -571,8 +576,7 @@ impl Handler {
         let dev = self.connected_dev.lock().await;
         let dev = dev.as_ref().ok_or(Error::NoDeviceConnected)?;
 
-        let charac =
-            find_characteristic(dev, characteristic, service)?;
+        let charac = find_characteristic(dev, characteristic, service)?;
 
         dev.write(&charac, data, write_type.into()).await?;
 
@@ -602,17 +606,13 @@ impl Handler {
         let dev = self.connected_dev.lock().await;
         let dev = dev.as_ref().ok_or(Error::NoDeviceConnected)?;
 
-        let charac = find_characteristic(
-            dev,
-            characteristic,
-            service,
-        )?;
+        let charac = find_characteristic(dev, characteristic, service)?;
 
         let data = dev.read(&charac).await?;
 
         Ok(data)
     }
-    
+
     /// Subscribe to notifications from the given characteristic
     /// The callback will be called whenever a notification is received
     /// # Errors
@@ -637,8 +637,7 @@ impl Handler {
         let dev = self.connected_dev.lock().await;
         let dev = dev.as_ref().ok_or(Error::NoDeviceConnected)?;
 
-        let charac =
-            find_characteristic(dev, characteristic, service)?;
+        let charac = find_characteristic(dev, characteristic, service)?;
 
         dev.subscribe(&charac).await?;
 
@@ -663,8 +662,7 @@ impl Handler {
         let dev = self.connected_dev.lock().await;
         let dev = dev.as_ref().ok_or(Error::NoDeviceConnected)?;
 
-        let charac =
-            find_characteristic(dev, characteristic, service)?;
+        let charac = find_characteristic(dev, characteristic, service)?;
 
         dev.unsubscribe(&charac).await?;
 
@@ -718,7 +716,9 @@ impl Handler {
                     .expect("failed to send connected update");
             } else {
                 // event not for currently connected device, ignore
-                debug!("Unexpected connect event for device {peripheral_id}, connected device is {connected_device}");
+                debug!(
+                    "Unexpected connect event for device {peripheral_id}, connected device is {connected_device}"
+                );
             }
         } else {
             debug!(
@@ -827,7 +827,5 @@ fn find_characteristic(
                     .map(|service| candidate.service_uuid == service)
                     .unwrap_or(true)
         })
-        .ok_or_else(|| {
-            Error::CharacNotAvailable(characteristic.to_string())
-        })
+        .ok_or_else(|| Error::CharacNotAvailable(characteristic.to_string()))
 }

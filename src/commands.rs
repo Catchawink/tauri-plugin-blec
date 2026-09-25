@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use btleplug::api::Characteristic;
 use tauri::ipc::Channel;
-use tauri::{async_runtime, command, AppHandle, Runtime};
+use tauri::{AppHandle, Runtime, async_runtime, command};
 use tokio::sync::mpsc;
 use tracing::info;
 use uuid::Uuid;
@@ -21,7 +21,7 @@ pub(crate) async fn scan<R: Runtime>(
     tracing::info!("Scanning for BLE devices");
     let handler = get_handler()?;
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-    
+
     async_runtime::spawn(async move {
         while let Some(devices) = rx.recv().await {
             on_devices
@@ -123,12 +123,7 @@ pub(crate) async fn send<R: Runtime>(
     let handler = get_handler()?;
 
     handler
-        .send_data(
-            characteristic,
-            service,
-            &data,
-            write_type,
-        )
+        .send_data(characteristic, service, &data, write_type)
         .await?;
 
     Ok(())
@@ -142,9 +137,7 @@ pub(crate) async fn recv<R: Runtime>(
 ) -> Result<Vec<u8>> {
     let handler = get_handler()?;
 
-    handler
-        .recv_data(characteristic, service)
-        .await
+    handler.recv_data(characteristic, service).await
 }
 
 #[command]
@@ -155,14 +148,7 @@ pub(crate) async fn send_string<R: Runtime>(
     data: String,
     write_type: WriteType,
 ) -> Result<()> {
-    send(
-        app,
-        characteristic,
-        service,
-        data.into_bytes(),
-        write_type,
-    )
-    .await
+    send(app, characteristic, service, data.into_bytes(), write_type).await
 }
 
 #[command]
@@ -186,19 +172,13 @@ async fn subscribe_channel(
     let (tx, rx) = tokio::sync::mpsc::channel(512);
 
     handler
-        .subscribe(
-            characteristic,
-            service,
-            move |data| {
-                info!("subscribe_channel: {:?}", data);
+        .subscribe(characteristic, service, move |data| {
+            info!("subscribe_channel: {:?}", data);
 
-                if let Err(error) = tx.try_send(data.to_vec()) {
-                    tracing::warn!(
-                        "Failed to queue BLE notification: {error}"
-                    );
-                }
-            },
-        )
+            if let Err(error) = tx.try_send(data.to_vec()) {
+                tracing::warn!("Failed to queue BLE notification: {error}");
+            }
+        })
         .await?;
 
     Ok(rx)
@@ -216,9 +196,7 @@ pub(crate) async fn subscribe<R: Runtime>(
     async_runtime::spawn(async move {
         while let Some(data) = rx.recv().await {
             if let Err(error) = on_data.send(data) {
-                tracing::warn!(
-                    "Failed to send BLE notification to front-end: {error}"
-                );
+                tracing::warn!("Failed to send BLE notification to front-end: {error}");
                 break;
             }
         }
@@ -241,17 +219,13 @@ pub(crate) async fn subscribe_string<R: Runtime>(
             match String::from_utf8(data) {
                 Ok(data) => {
                     if let Err(error) = on_data.send(data) {
-                        tracing::warn!(
-                            "Failed to send BLE notification to front-end: {error}"
-                        );
+                        tracing::warn!("Failed to send BLE notification to front-end: {error}");
                         break;
                     }
                 }
 
                 Err(error) => {
-                    tracing::warn!(
-                        "Received invalid UTF-8 BLE notification: {error}"
-                    );
+                    tracing::warn!("Received invalid UTF-8 BLE notification: {error}");
                 }
             }
         }
@@ -268,9 +242,7 @@ pub(crate) async fn unsubscribe<R: Runtime>(
 ) -> Result<()> {
     let handler = get_handler()?;
 
-    handler
-        .unsubscribe(characteristic, service)
-        .await
+    handler.unsubscribe(characteristic, service).await
 }
 
 pub fn commands<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool {

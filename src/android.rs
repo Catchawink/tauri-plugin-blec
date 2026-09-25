@@ -258,9 +258,7 @@ impl btleplug::api::Peripheral for Peripheral {
             for c in s.characs {
                 eprintln!(
                     "ANDROID->RUST characteristic {} service {} raw properties={:#04x}",
-                    c.uuid,
-                    s.uuid,
-                    c.properties,
+                    c.uuid, s.uuid, c.properties,
                 );
 
                 let properties = CharPropFlags::from_bits_truncate(c.properties);

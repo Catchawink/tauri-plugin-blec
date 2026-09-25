@@ -8,16 +8,15 @@ mod error;
 mod handler;
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_arch = "xtensa")))]
-mod lib {   
+mod lib {
     pub use crate::error::Error;
     pub use crate::handler::Handler;
 
     use futures::StreamExt;
     use once_cell::sync::OnceCell;
     use tauri::{
-        async_runtime,
+        Wry, async_runtime,
         plugin::{Builder, TauriPlugin},
-        Wry,
     };
 
     static HANDLER: OnceCell<Handler> = OnceCell::new();
@@ -26,7 +25,8 @@ mod lib {
     /// # Panics
     /// Panics if the handler cannot be initialized.
     pub fn init() -> TauriPlugin<Wry> {
-        let handler = async_runtime::block_on(Handler::new()).expect("failed to initialize handler");
+        let handler =
+            async_runtime::block_on(Handler::new()).expect("failed to initialize handler");
         let _ = HANDLER.set(handler);
 
         #[allow(unused)]
@@ -45,7 +45,9 @@ mod lib {
     /// # Errors
     /// Returns an error if the handler is not initialized.
     pub fn get_handler() -> crate::error::Result<&'static Handler> {
-        let handler = HANDLER.get().ok_or(crate::error::Error::HandlerNotInitialized)?;
+        let handler = HANDLER
+            .get()
+            .ok_or(crate::error::Error::HandlerNotInitialized)?;
         Ok(handler)
     }
 
